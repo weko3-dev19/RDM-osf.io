@@ -691,14 +691,16 @@ class TimeStampTokenVerifyCheck:
                     verify_result = self.create_rdm_filetimestamptokenverify(
                         file_id, project_id, provider, path, ret, userid)
 
-                elif not verify_result.timestamp_token:
+                elif not verify_result.timestamp_token \
+                     and verify_result.inspection_result_status != api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
                     # if timestamptoken does not exist:
                     # update verifyResult 'TST missing(Retrieving Failed)'
                     verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
 
-            if ret == 0:
+            if ret == 0 and verify_result.inspection_result_status != \
+               api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
 
                 if not api_settings.USE_UPKI:
                     timestamptoken_file = guid + '.tsr'
