@@ -7,6 +7,7 @@ import datetime
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -46,8 +47,15 @@ RESULT_MESSAGE = {
     api_settings.TIME_STAMP_STORAGE_DISCONNECTED:
         api_settings.TIME_STAMP_STORAGE_DISCONNECTED_MSG,
     api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE:
-        api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG
+        api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG,
+    api_settings.FILE_OVERWRITTEN:
+        api_settings.FILE_OVERWRITTEN_MSG,
 }
+
+DELETED_STATUS = [
+    api_settings.FILE_NOT_EXISTS,
+    api_settings.FILE_OVERWRITTEN
+]
 
 def get_error_list(pid):
     '''
@@ -374,13 +382,79 @@ def file_created_or_updated(node, metadata, user_id, created_flag):
         verify_data.upload_file_size = file_info['size']
         verify_data.save()
 
+def file_node_moved(project_id, provider, src_path, dest_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+    dest_path = dest_path if dest_path[0] == '/' else '/' + dest_path
+    target_object_id = Guid.objects.get(_id=project_id,
+                                        content_type_id=ContentType.objects.get_for_model(AbstractNode).id).object_id
+    deleted_files = RdmFileTimestamptokenVerifyResult.objects.filter(
+        path__startswith=dest_path,
+        project_id=project_id,
+        provider=provider
+    ).exclude(
+        inspection_result_status=api_settings.FILE_NOT_EXISTS
+    ).all()
+    for deleted_file in deleted_files:
+        file_node_overwitten(project_id, target_object_id, provider, dest_path)
+
+    moved_files = RdmFileTimestamptokenVerifyResult.objects.filter(
+        path__startswith=src_path,
+        project_id=project_id,
+        provider=provider
+    ).exclude(
+        inspection_result_status=api_settings.FILE_NOT_EXISTS
+    ).all()
+    for moved_file in moved_files:
+        moved_file.path = moved_file.path.replace(src_path, dest_path, 1)
+        moved_file.save()
+
+    if provider != 'osfstorage' and src_path[-1:] == '/':
+        file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                 provider=provider,
+                                                 deleted_on__isnull=True,
+                                                 _path__startswith=src_path).all()
+        for file_node in file_nodes:
+            file_node._path = re.sub(r'^' + src_path, dest_path, file_node._path)
+            file_node._materialized_path = re.sub(r'^' + src_path, dest_path, file_node._path)
+            file_node.save()
+    else:
+        file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                 provider=provider,
+                                                 deleted_on__isnull=True,
+                                                 _path=src_path).all()
+        for file_node in file_nodes:
+            file_node._path = dest_path
+            file_node._materialized_path = dest_path
+            file_node.save()
+
+def file_node_overwitten(project_id, target_object_id, addon_name, src_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+    tst_status = api_settings.FILE_NOT_EXISTS
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).update(inspection_result_status=tst_status)
+    if addon_name != 'osfstorage':
+        if src_path[-1:] == '/':
+            file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                     provider=addon_name,
+                                                     deleted_on__isnull=True,
+                                                     _path__startswith=src_path).all()
+        else:
+            file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                     provider=addon_name,
+                                                     deleted_on__isnull=True,
+                                                     _path=src_path).all()
+        for file_node in file_nodes:
+            file_node.delete()
+
 def file_node_deleted(project_id, addon_name, src_path):
     src_path = src_path if src_path[0] == '/' else '/' + src_path
 
     tst_status = api_settings.FILE_NOT_EXISTS
     if src_path == '/':
         tst_status = api_settings.TIME_STAMP_STORAGE_DISCONNECTED
-    logger.info('---tst_status:{}'.format(tst_status))
     RdmFileTimestamptokenVerifyResult.objects.filter(
         project_id=project_id,
         provider=addon_name,
@@ -668,6 +742,13 @@ class TimeStampTokenVerifyCheck:
         ret = 0
         verify_result_title = None
 
+        if verify_result and verify_result.inspection_result_status in DELETED_STATUS:
+            return {
+                'verify_result': verify_result.inspection_result_status,
+                'verify_result_title': RESULT_MESSAGE[verify_result.inspection_result_status],
+                'filepath': verify_result.provider + verify_result.path
+            }
+
         try:
             # get file information, verifyresult table
             if provider == 'osfstorage':
@@ -723,17 +804,14 @@ class TimeStampTokenVerifyCheck:
                     verify_result = self.create_rdm_filetimestamptokenverify(
                         file_id, project_id, provider, path, ret, userid)
 
-                elif not verify_result.timestamp_token and verify_result.inspection_result_status != \
-                         api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
+                elif not verify_result.timestamp_token:
                     # if timestamptoken does not exist:
                     # update verifyResult 'TST missing(Retrieving Failed)'
                     verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
 
-            if ret == 0 and verify_result.inspection_result_status != \
-               api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
-
+            if ret == 0:
                 if not api_settings.USE_UPKI:
                     timestamptoken_file = guid + '.tsr'
                     timestamptoken_file_path = os.path.join(tmp_dir, timestamptoken_file)

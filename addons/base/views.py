@@ -497,6 +497,12 @@ def create_waterbutler_log(payload, **kwargs):
             if metadata['kind'] == 'file':
                 created_flag = action == NodeLog.FILE_ADDED
                 timestamp.file_created_or_updated(node, metadata, user.id, created_flag)
+        # Update moved, or renamed timestamp records
+        elif action in (NodeLog.FILE_MOVED, NodeLog.FILE_RENAMED):
+            src_path = payload['source']['materialized']
+            dest_path = payload['destination']['materialized']
+            provider = payload['source']['provider']
+            timestamp.file_node_moved(node._id, provider, src_path, dest_path)
         # Update status of deleted timestamp records
         elif action in (NodeLog.FILE_REMOVED):
             src_path = metadata['materialized']
@@ -875,68 +881,72 @@ def addon_view_file(auth, node, file_node, version):
     )
 
     # Verify file
-    verify_result = {
-        'verify_result': '',
-        'verify_result_title': ''
-    }
-    cookie = auth.user.get_or_create_cookie()
-    headers = {'content-type': 'application/json'}
-    file_data_request = requests.get(
-        file_node.generate_waterbutler_url(
-            version=version.identifier, meta='', _internal=True
-        ), headers=headers, cookies={settings.COOKIE_NAME: cookie}
-    )
-    if file_data_request.status_code == 200:
-        file_data = file_data_request.json().get('data')
-        file_info = {
-            'provider': file_node.provider,
-            'file_id': file_node._id,
-            'file_name': file_data['attributes'].get('name'),
-            'file_path': file_data['attributes'].get('materialized'),
-            'size': file_data['attributes'].get('size'),
-            'created': file_data['attributes'].get('created_utc'),
-            'modified': file_data['attributes'].get('modified_utc'),
-            'version': ''
+    try:
+        verify_result = {
+            'verify_result': '',
+            'verify_result_title': ''
         }
-        if file_node.provider == 'osfstorage':
-            file_info['version'] = file_data['attributes']['extra'].get('version')
-        verify_result = timestamp.check_file_timestamp(auth.user.id, node, file_info)
+        cookie = auth.user.get_or_create_cookie()
+        headers = {'content-type': 'application/json'}
+        file_data_request = requests.get(
+            file_node.generate_waterbutler_url(
+                version=version.identifier, meta='', _internal=True
+            ), headers=headers, cookies={settings.COOKIE_NAME: cookie}
+        )
+        if file_data_request.status_code == 200:
+            file_data = file_data_request.json().get('data')
+            file_info = {
+                'provider': file_node.provider,
+                'file_id': file_node._id,
+                'file_name': file_data['attributes'].get('name'),
+                'file_path': file_data['attributes'].get('materialized'),
+                'size': file_data['attributes'].get('size'),
+                'created': file_data['attributes'].get('created_utc'),
+                'modified': file_data['attributes'].get('modified_utc'),
+                'version': ''
+            }
+            if file_node.provider == 'osfstorage':
+                file_info['version'] = file_data['attributes']['extra'].get('version')
+            verify_result = timestamp.check_file_timestamp(auth.user.id, node, file_info)
 
-    mfr_url = get_mfr_url(node, file_node.provider)
-    render_url = furl.furl(mfr_url).set(
-        path=['render'],
-        args={'url': download_url.url}
-    )
-    ret.update({
-        'urls': {
-            'render': render_url.url,
-            'mfr': mfr_url,
-            'sharejs': wiki_settings.SHAREJS_URL,
-            'profile_image': get_profile_image_url(auth.user, 25),
-            'files': node.web_url_for('collect_file_trees'),
-            'archived_from': get_archived_from_url(node, file_node) if node.is_registration else None,
-        },
-        'error': error,
-        'file_name': file_node.name,
-        'file_name_title': os.path.splitext(file_node.name)[0],
-        'file_name_ext': os.path.splitext(file_node.name)[1],
-        'version_id': version.identifier,
-        'file_path': file_node.path,
-        'sharejs_uuid': sharejs_uuid,
-        'provider': file_node.provider,
-        'materialized_path': file_node.materialized_path,
-        'extra': version.metadata.get('extra', {}),
-        'size': version.size if version.size is not None else 9966699,
-        'private': getattr(node.get_addon(file_node.provider), 'is_private', False),
-        'file_tags': list(file_node.tags.filter(system=False).values_list('name', flat=True)) if not file_node._state.adding else [],  # Only access ManyRelatedManager if saved
-        'file_guid': file_node.get_guid()._id,
-        'file_id': file_node._id,
-        'allow_comments': file_node.provider in settings.ADDONS_COMMENTABLE,
-        'checkout_user': file_node.checkout._id if file_node.checkout else None,
-        'pre_reg_checkout': is_pre_reg_checkout(node, file_node),
-        'timestamp_verify_result': verify_result['verify_result'],
-        'timestamp_verify_result_title': verify_result['verify_result_title']
-    })
+        mfr_url = get_mfr_url(node, file_node.provider)
+        render_url = furl.furl(mfr_url).set(
+            path=['render'],
+            args={'url': download_url.url}
+        )
+        ret.update({
+            'urls': {
+                'render': render_url.url,
+                'mfr': mfr_url,
+                'sharejs': wiki_settings.SHAREJS_URL,
+                'profile_image': get_profile_image_url(auth.user, 25),
+                'files': node.web_url_for('collect_file_trees'),
+                'archived_from': get_archived_from_url(node, file_node) if node.is_registration else None,
+            },
+            'error': error,
+            'file_name': file_node.name,
+            'file_name_title': os.path.splitext(file_node.name)[0],
+            'file_name_ext': os.path.splitext(file_node.name)[1],
+            'version_id': version.identifier,
+            'file_path': file_node.path,
+            'sharejs_uuid': sharejs_uuid,
+            'provider': file_node.provider,
+            'materialized_path': file_node.materialized_path,
+            'extra': version.metadata.get('extra', {}),
+            'size': version.size if version.size is not None else 9966699,
+            'private': getattr(node.get_addon(file_node.provider), 'is_private', False),
+            'file_tags': list(file_node.tags.filter(system=False).values_list('name', flat=True)) if not file_node._state.adding else [],  # Only access ManyRelatedManager if saved
+            'file_guid': file_node.get_guid()._id,
+            'file_id': file_node._id,
+            'allow_comments': file_node.provider in settings.ADDONS_COMMENTABLE,
+            'checkout_user': file_node.checkout._id if file_node.checkout else None,
+            'pre_reg_checkout': is_pre_reg_checkout(node, file_node),
+            'timestamp_verify_result': verify_result['verify_result'],
+            'timestamp_verify_result_title': verify_result['verify_result_title']
+        })
+    except Exception as err:
+        logger.error(err)
+        pass
 
     ret.update(rubeus.collect_addon_assets(node))
     return ret
