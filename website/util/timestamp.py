@@ -48,14 +48,8 @@ RESULT_MESSAGE = {
         api_settings.TIME_STAMP_STORAGE_DISCONNECTED_MSG,
     api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE:
         api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG,
-    api_settings.FILE_OVERWRITTEN:
-        api_settings.FILE_OVERWRITTEN_MSG,
 }
 
-DELETED_STATUS = [
-    api_settings.FILE_NOT_EXISTS,
-    api_settings.FILE_OVERWRITTEN
-]
 
 def get_error_list(pid):
     '''
@@ -742,13 +736,6 @@ class TimeStampTokenVerifyCheck:
         ret = 0
         verify_result_title = None
 
-        if verify_result and verify_result.inspection_result_status in DELETED_STATUS:
-            return {
-                'verify_result': verify_result.inspection_result_status,
-                'verify_result_title': RESULT_MESSAGE[verify_result.inspection_result_status],
-                'filepath': verify_result.provider + verify_result.path
-            }
-
         try:
             # get file information, verifyresult table
             if provider == 'osfstorage':
@@ -804,14 +791,16 @@ class TimeStampTokenVerifyCheck:
                     verify_result = self.create_rdm_filetimestamptokenverify(
                         file_id, project_id, provider, path, ret, userid)
 
-                elif not verify_result.timestamp_token:
+                elif not verify_result.timestamp_token and verify_result.inspection_result_status != \
+                         api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
                     # if timestamptoken does not exist:
                     # update verifyResult 'TST missing(Retrieving Failed)'
                     verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
 
-            if ret == 0:
+            if ret == 0 and verify_result.inspection_result_status != \
+               api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
                 if not api_settings.USE_UPKI:
                     timestamptoken_file = guid + '.tsr'
                     timestamptoken_file_path = os.path.join(tmp_dir, timestamptoken_file)
