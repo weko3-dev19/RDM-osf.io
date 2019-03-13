@@ -43,6 +43,10 @@ RESULT_MESSAGE = {
         api_settings.FILE_NOT_EXISTS_MSG,  # 'FILE missing'
     api_settings.TIME_STAMP_VERIFICATION_ERR:
         api_settings.TIME_STAMP_VERIFICATION_ERR_MSG,
+    api_settings.TIME_STAMP_STORAGE_DISCONNECTED:
+        api_settings.TIME_STAMP_STORAGE_DISCONNECTED_MSG,
+    api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE:
+        api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG
 }
 
 def get_error_list(pid):
@@ -174,12 +178,17 @@ def get_full_list(uid, pid, node):
                 project_id=node._id,
                 provider=provider
             )
+            files_status = provider_files.first().inspection_result_status
+            if files_status != api_settings.TIME_STAMP_STORAGE_DISCONNECTED:
+                not_accessible_status = api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE
+                provider_files.update(inspection_result_status=not_accessible_status)
+            continue
         else:
             RdmFileTimestamptokenVerifyResult.objects.filter(
                 project_id=node._id,
                 provider=provider,
-                inspection_result_status=api_settings.FILE_NOT_EXISTS
-            ).update(inspection_result_status=api_settings.FILE_NOT_EXISTS)
+                inspection_result_status=api_settings.TIME_STAMP_STORAGE_DISCONNECTED
+            ).update(inspection_result_status=api_settings.FILE_NOT_FOUND)
 
         file_list = []
         child_file_list = []
@@ -246,6 +255,7 @@ def check_file_timestamp(uid, node, data):
         if download_file_path is None:
             intentional_remove_status = [
                 api_settings.FILE_NOT_EXISTS,
+                api_settings.TIME_STAMP_STORAGE_DISCONNECTED
             ]
             file_data = RdmFileTimestamptokenVerifyResult.objects.filter(file_id=data['file_id'])
             if file_data.exists() and \
@@ -281,6 +291,14 @@ def add_token(uid, node, data):
     # Check access to provider
     root_file_nodes = waterbutler.get_node_info(cookie, node._id, data['provider'], '/')
     if root_file_nodes is None:
+        provider_files = RdmFileTimestamptokenVerifyResult.objects.filter(
+            project_id=node._id,
+            provider=data['provider']
+        )
+        files_status = provider_files.first().inspection_result_status
+        if files_status != api_settings.TIME_STAMP_STORAGE_DISCONNECTED:
+            not_accessible_status = api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE
+            provider_files.update(inspection_result_status=not_accessible_status)
         return None
 
     try:
@@ -291,6 +309,7 @@ def add_token(uid, node, data):
         if download_file_path is None:
             intentional_remove_status = [
                 api_settings.FILE_NOT_EXISTS,
+                api_settings.TIME_STAMP_STORAGE_DISCONNECTED
             ]
             file_data = RdmFileTimestamptokenVerifyResult.objects.filter(file_id=data['file_id'])
             if file_data.exists() and \
@@ -354,6 +373,19 @@ def file_created_or_updated(node, metadata, user_id, created_flag):
         verify_data.upload_file_modified_at = file_info['modified']
         verify_data.upload_file_size = file_info['size']
         verify_data.save()
+
+def file_node_deleted(project_id, addon_name, src_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+
+    tst_status = api_settings.FILE_NOT_EXISTS
+    if src_path == '/':
+        tst_status = api_settings.TIME_STAMP_STORAGE_DISCONNECTED
+    logger.info('---tst_status:{}'.format(tst_status))
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).update(inspection_result_status=tst_status)
 
 def waterbutler_folder_file_info(pid, provider, path, node, cookies, headers):
     # get waterbutler folder file
@@ -691,8 +723,8 @@ class TimeStampTokenVerifyCheck:
                     verify_result = self.create_rdm_filetimestamptokenverify(
                         file_id, project_id, provider, path, ret, userid)
 
-                elif not verify_result.timestamp_token \
-                     and verify_result.inspection_result_status != api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
+                elif not verify_result.timestamp_token and verify_result.inspection_result_status != \
+                    api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
                     # if timestamptoken does not exist:
                     # update verifyResult 'TST missing(Retrieving Failed)'
                     verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
