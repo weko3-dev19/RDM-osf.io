@@ -50,7 +50,13 @@ RESULT_MESSAGE = {
         api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG,
 }
 
-
+STATUS_NOT_ACCESSIBLE = [
+    api_settings.FILE_NOT_EXISTS,
+    api_settings.FILE_NOT_FOUND,
+    api_settings.TIME_STAMP_VERIFICATION_ERR,
+    api_settings.TIME_STAMP_STORAGE_DISCONNECTED,
+    api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE
+]
 def get_error_list(pid):
     '''
     Retrieve from the database the list of all timestamps that has an error.
@@ -407,7 +413,7 @@ def file_node_moved(project_id, provider, src_path, dest_path):
         project_id=project_id,
         provider=provider
     ).exclude(
-        inspection_result_status=api_settings.FILE_NOT_EXISTS
+        inspection_result_status__in=STATUS_NOT_ACCESSIBLE
     ).all()
     for moved_file in moved_files:
         moved_file.path = moved_file.path.replace(src_path, dest_path, 1)
@@ -633,7 +639,7 @@ class AddTimestamp:
 
     def get_timestamp_upki(self, file_name, tmp_dir):
         cmd = api_settings.UPKI_CREATE_TIMESTAMP.format(
-            file_name,
+            file_name.encode('utf-8'),
             '/dev/stdout'
         ).split(api_settings.TST_COMMAND_DELIMITER)
         try:
@@ -824,8 +830,7 @@ class TimeStampTokenVerifyCheck:
                     ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
                     verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
 
-            if ret == 0 and verify_result.inspection_result_status != \
-               api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
+            if ret == 0 and verify_result.timestamp_token:
                 if not api_settings.USE_UPKI:
                     timestamptoken_file = guid + '.tsr'
                     timestamptoken_file_path = os.path.join(tmp_dir, timestamptoken_file)
@@ -870,8 +875,8 @@ class TimeStampTokenVerifyCheck:
                     except Exception as err:
                         raise err
                     cmd = api_settings.UPKI_VERIFY_TIMESTAMP.format(
-                        file_name,
-                        file_name + '.tst'
+                        file_name.encode('utf-8'),
+                        file_name.encode('utf-8') + '.tst'
                     ).split(api_settings.TST_COMMAND_DELIMITER)
                     try:
                         process = subprocess.Popen(
