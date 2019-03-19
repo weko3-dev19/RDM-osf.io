@@ -294,6 +294,36 @@ class TestTimeStampTokenVerifyCheck(ApiTestCase):
         nt.assert_equal(len(tsresult_list), 1)
         nt.assert_equal(tsresult_list[0].inspection_result_status, api_settings.TIME_STAMP_STORAGE_DISCONNECTED)
 
+    @mock.patch('requests.get')
+    @mock.patch('website.util.waterbutler.requests', side_effect=Exception('Test'))
+    def test_veriftresult_change_to_gone(self, mock_requests, mock_get):
+        mock_get.return_value.json.return_value = {
+            'data': [
+                {'attributes': {'provider': 'github'}}
+            ]
+        }
+
+        # Create new TS and assert it has status GONE
+        create_rdmfiletimestamptokenverifyresult(self, 'githubfile.txt', 'github', False)
+        tsresult = RdmFileTimestamptokenVerifyResult.objects.filter(project_id=self.node._id)
+        nt.assert_equal(tsresult.count(), 1)
+        tsresult.update(inspection_result_status=api_settings.TIME_STAMP_STORAGE_DISCONNECTED)
+
+        data = {
+            'file_id': tsresult.get().file_id,
+            'provider': 'github',
+            'file_path': '/githubfile.txt'
+        }
+        timestamp.file_node_gone(self.node._id, data['provider'], data['file_path'])
+        node_updateresult = RdmFileTimestamptokenVerifyResult.objects.get(project_id=self.node._id)
+        nt.assert_equal(node_updateresult.inspection_result_status, api_settings.FILE_NOT_FOUND)
+
+        # Deleted TS entry must NOT be updated
+        tsresult.update(inspection_result_status=api_settings.FILE_NOT_EXISTS)
+        timestamp.file_node_gone(self.node._id, data['provider'], data['file_path'])
+        deleted_node_updateresult = RdmFileTimestamptokenVerifyResult.objects.get(project_id=self.node._id)
+        nt.assert_equal(deleted_node_updateresult.inspection_result_status, api_settings.FILE_NOT_EXISTS)
+
     def test_timestamp_check_return_status_1(self):
         """
         TIME_STAMP_TOKEN_CHECK_SUCCESS = 1

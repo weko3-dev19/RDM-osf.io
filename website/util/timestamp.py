@@ -290,6 +290,17 @@ def add_token(uid, node, data):
 
     file_node = BaseFileNode.objects.get(_id=data['file_id'])
 
+    # not update token when verifyResult Status == 5(deleted)
+    if RdmFileTimestamptokenVerifyResult.objects.filter(file_id=data['file_id']).exists():
+        verifyResult = RdmFileTimestamptokenVerifyResult.objects.get(file_id=data['file_id'])
+        if verifyResult.inspection_result_status == api_settings.FILE_NOT_EXISTS:
+            logger.warn('file {}:{} is deleted.'.format(verifyResult.provider, verifyResult.path))
+            return {
+                'verify_result': verifyResult.inspection_result_status,
+                'verify_result_title': api_settings.FILE_NOT_EXISTS_MSG,
+                'filepath': verifyResult.path
+            }
+
     # Check access to provider
     root_file_nodes = waterbutler.get_node_info(cookie, node._id, data['provider'], '/')
     if root_file_nodes is None:
@@ -423,12 +434,11 @@ def file_node_moved(project_id, provider, src_path, dest_path):
 
 def file_node_overwitten(project_id, target_object_id, addon_name, src_path):
     src_path = src_path if src_path[0] == '/' else '/' + src_path
-    tst_status = api_settings.FILE_NOT_EXISTS
     RdmFileTimestamptokenVerifyResult.objects.filter(
         project_id=project_id,
         provider=addon_name,
         path__startswith=src_path
-    ).update(inspection_result_status=tst_status)
+    ).delete()
     if addon_name != 'osfstorage':
         if src_path[-1:] == '/':
             file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
@@ -453,6 +463,21 @@ def file_node_deleted(project_id, addon_name, src_path):
         project_id=project_id,
         provider=addon_name,
         path__startswith=src_path
+    ).update(inspection_result_status=tst_status)
+
+def file_node_gone(project_id, addon_name, src_path):
+    if project_id is None or addon_name is None or src_path is None:
+        return
+
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+
+    tst_status = api_settings.FILE_NOT_FOUND
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).exclude(
+        inspection_result_status=api_settings.FILE_NOT_EXISTS
     ).update(inspection_result_status=tst_status)
 
 def waterbutler_folder_file_info(pid, provider, path, node, cookies, headers):
@@ -528,12 +553,12 @@ def userkey_generation(guid):
         pvt_key_generation_cmd = api_settings.SSL_PRIVATE_KEY_GENERATION.format(
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pvt_key_name),
             api_settings.KEY_BIT_VALUE
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
 
         pub_key_generation_cmd = api_settings.SSL_PUBLIC_KEY_GENERATION.format(
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pvt_key_name),
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pub_key_name)
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
 
         prc = subprocess.Popen(
             pvt_key_generation_cmd, shell=False, stdin=subprocess.PIPE,
@@ -574,7 +599,7 @@ def create_rdmuserkey_info(user_id, key_name, key_kind, date):
 class AddTimestamp:
     #1 create tsq (timestamp request) from file, and keyinfo
     def get_timestamp_request(self, file_name):
-        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name).split(' ')
+        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name).split(api_settings.TST_COMMAND_DELIMITER)
         process = subprocess.Popen(
             cmd, shell=False, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -610,7 +635,7 @@ class AddTimestamp:
         cmd = api_settings.UPKI_CREATE_TIMESTAMP.format(
             file_name,
             '/dev/stdout'
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
         try:
             process = subprocess.Popen(
                 cmd, shell=False, stdin=subprocess.PIPE,
@@ -822,7 +847,7 @@ class TimeStampTokenVerifyCheck:
                         file_name,
                         timestamptoken_file_path,
                         os.path.join(api_settings.KEY_SAVE_PATH, api_settings.VERIFY_ROOT_CERTIFICATE)
-                    ).split(' ')
+                    ).split(api_settings.TST_COMMAND_DELIMITER)
                     prc = subprocess.Popen(
                         cmd, shell=False, stdin=subprocess.PIPE,
                         stderr=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -847,7 +872,7 @@ class TimeStampTokenVerifyCheck:
                     cmd = api_settings.UPKI_VERIFY_TIMESTAMP.format(
                         file_name,
                         file_name + '.tst'
-                    ).split(' ')
+                    ).split(api_settings.TST_COMMAND_DELIMITER)
                     try:
                         process = subprocess.Popen(
                             cmd, shell=False, stdin=subprocess.PIPE,
