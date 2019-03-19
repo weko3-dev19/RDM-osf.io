@@ -599,7 +599,7 @@ def create_rdmuserkey_info(user_id, key_name, key_kind, date):
 class AddTimestamp:
     #1 create tsq (timestamp request) from file, and keyinfo
     def get_timestamp_request(self, file_name):
-        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name).split(api_settings.TST_COMMAND_DELIMITER)
+        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name.encode('utf-8')).split(api_settings.TST_COMMAND_DELIMITER)
         process = subprocess.Popen(
             cmd, shell=False, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -844,7 +844,7 @@ class TimeStampTokenVerifyCheck:
                         raise err
 
                     cmd = api_settings.SSL_GET_TIMESTAMP_RESPONSE.format(
-                        file_name,
+                        file_name.encode('utf-8'),
                         timestamptoken_file_path,
                         os.path.join(api_settings.KEY_SAVE_PATH, api_settings.VERIFY_ROOT_CERTIFICATE)
                     ).split(api_settings.TST_COMMAND_DELIMITER)
