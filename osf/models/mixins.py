@@ -125,6 +125,10 @@ class Loggable(models.Model):
             except KeyError:
                 print('KeyError')
 
+        if 'node_deauthorized' in action:
+            from website.util import timestamp
+            timestamp.file_node_deleted(params['node'], action.split('_')[0], '/')
+
         if log_date:
             log.date = log_date
         log.save()
@@ -327,6 +331,7 @@ class AddonModelMixin(models.Model):
             mandatory add-ons!
         :return bool: Add-on was deleted
         """
+        from website.util import timestamp
         addon = self.get_addon(addon_name)
         if not addon:
             return False
@@ -335,6 +340,7 @@ class AddonModelMixin(models.Model):
         if getattr(addon, 'external_account', None):
             addon.deauthorize(auth=auth)
         addon.delete(save=True)
+        timestamp.file_node_deleted(self._id, addon_name, '/')
         return True
 
     def _settings_model(self, addon_model, config=None):

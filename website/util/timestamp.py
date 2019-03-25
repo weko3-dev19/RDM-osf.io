@@ -7,6 +7,7 @@ import datetime
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,7 +46,19 @@ RESULT_MESSAGE = {
         api_settings.FILE_NOT_EXISTS_MSG,  # 'FILE missing'
     api_settings.TIME_STAMP_VERIFICATION_ERR:
         api_settings.TIME_STAMP_VERIFICATION_ERR_MSG,
+    api_settings.TIME_STAMP_STORAGE_DISCONNECTED:
+        api_settings.TIME_STAMP_STORAGE_DISCONNECTED_MSG,
+    api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE:
+        api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE_MSG,
 }
+
+STATUS_NOT_ACCESSIBLE = [
+    api_settings.FILE_NOT_EXISTS,
+    api_settings.FILE_NOT_FOUND,
+    api_settings.TIME_STAMP_VERIFICATION_ERR,
+    api_settings.TIME_STAMP_STORAGE_DISCONNECTED,
+    api_settings.TIME_STAMP_STORAGE_NOT_ACCESSIBLE
+]
 
 def get_async_task_data(node):
     task_data = {
@@ -216,6 +229,8 @@ def get_full_list(uid, pid, node):
                     node,
                     file_data['attributes']['path']
                 )
+                basefile_node.materialized_path = file_data['attributes']['path']
+                basefile_node.name = os.path.basename(file_data['attributes']['path'])
                 basefile_node.save()
                 file_info = {
                     'file_id': basefile_node._id,
@@ -406,10 +421,13 @@ def add_token(uid, node, data):
         raise
 
 def file_created_or_updated(node, metadata, user_id, created_flag):
+    print(metadata)
     if metadata['provider'] != 'osfstorage':
         file_node = BaseFileNode.resolve_class(
             metadata['provider'], BaseFileNode.FILE
         ).get_or_create(node, metadata.get('materialized'))
+        file_node.materialized_path = metadata.get('materialized')
+        file_node.name = os.path.basename(metadata.get('materialized'))
         file_node.save()
         metadata['path'] = file_node._id
     created_at = metadata.get('created_utc')
@@ -446,6 +464,99 @@ def file_created_or_updated(node, metadata, user_id, created_flag):
         verify_data.upload_file_size = file_info['size']
         verify_data.save()
 
+def file_node_moved(project_id, provider, src_path, dest_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+    dest_path = dest_path if dest_path[0] == '/' else '/' + dest_path
+    target_object_id = Guid.objects.get(_id=project_id,
+                                        content_type_id=ContentType.objects.get_for_model(AbstractNode).id).object_id
+    deleted_files = RdmFileTimestamptokenVerifyResult.objects.filter(
+        path__startswith=dest_path,
+        project_id=project_id,
+        provider=provider
+    ).exclude(
+        inspection_result_status=api_settings.FILE_NOT_EXISTS
+    ).all()
+    for deleted_file in deleted_files:
+        file_node_overwitten(project_id, target_object_id, provider, dest_path)
+
+    moved_files = RdmFileTimestamptokenVerifyResult.objects.filter(
+        path__startswith=src_path,
+        project_id=project_id,
+        provider=provider
+    ).exclude(
+        inspection_result_status__in=STATUS_NOT_ACCESSIBLE
+    ).all()
+    for moved_file in moved_files:
+        moved_file.path = moved_file.path.replace(src_path, dest_path, 1)
+        moved_file.save()
+
+    if provider != 'osfstorage' and src_path[-1:] == '/':
+        file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                 provider=provider,
+                                                 deleted_on__isnull=True,
+                                                 _path__startswith=src_path).all()
+        for file_node in file_nodes:
+            file_node._path = re.sub(r'^' + src_path, dest_path, file_node._path)
+            file_node._materialized_path = re.sub(r'^' + src_path, dest_path, file_node._path)
+            file_node.save()
+    else:
+        file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                 provider=provider,
+                                                 deleted_on__isnull=True,
+                                                 _path=src_path).all()
+        for file_node in file_nodes:
+            file_node._path = dest_path
+            file_node._materialized_path = dest_path
+            file_node.save()
+
+def file_node_overwitten(project_id, target_object_id, addon_name, src_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).delete()
+    if addon_name != 'osfstorage':
+        if src_path[-1:] == '/':
+            file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                     provider=addon_name,
+                                                     deleted_on__isnull=True,
+                                                     _path__startswith=src_path).all()
+        else:
+            file_nodes = BaseFileNode.objects.filter(target_object_id=target_object_id,
+                                                     provider=addon_name,
+                                                     deleted_on__isnull=True,
+                                                     _path=src_path).all()
+        for file_node in file_nodes:
+            file_node.delete()
+
+def file_node_deleted(project_id, addon_name, src_path):
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+
+    tst_status = api_settings.FILE_NOT_EXISTS
+    if src_path == '/':
+        tst_status = api_settings.TIME_STAMP_STORAGE_DISCONNECTED
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).update(inspection_result_status=tst_status)
+
+def file_node_gone(project_id, addon_name, src_path):
+    if project_id is None or addon_name is None or src_path is None:
+        return
+
+    src_path = src_path if src_path[0] == '/' else '/' + src_path
+
+    tst_status = api_settings.FILE_NOT_FOUND
+    RdmFileTimestamptokenVerifyResult.objects.filter(
+        project_id=project_id,
+        provider=addon_name,
+        path__startswith=src_path
+    ).exclude(
+        inspection_result_status=api_settings.FILE_NOT_EXISTS
+    ).update(inspection_result_status=tst_status)
+
 def waterbutler_folder_file_info(pid, provider, path, node, cookies, headers):
     # get waterbutler folder file
     if provider == 'osfstorage':
@@ -479,6 +590,8 @@ def waterbutler_folder_file_info(pid, provider, path, node, cookies, headers):
                 node,
                 file_data['attributes']['path']
             )
+            basefile_node.materialized_path = file_data['attributes']['path']
+            basefile_node.name = os.path.basename(file_data['attributes']['path'])
             basefile_node.save()
             if provider == 'osfstorage':
                 file_info = {
@@ -519,12 +632,12 @@ def userkey_generation(guid):
         pvt_key_generation_cmd = api_settings.SSL_PRIVATE_KEY_GENERATION.format(
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pvt_key_name),
             api_settings.KEY_BIT_VALUE
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
 
         pub_key_generation_cmd = api_settings.SSL_PUBLIC_KEY_GENERATION.format(
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pvt_key_name),
             os.path.join(api_settings.KEY_SAVE_PATH, generation_pub_key_name)
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
 
         prc = subprocess.Popen(
             pvt_key_generation_cmd, shell=False, stdin=subprocess.PIPE,
@@ -565,7 +678,7 @@ def create_rdmuserkey_info(user_id, key_name, key_kind, date):
 class AddTimestamp:
     #1 create tsq (timestamp request) from file, and keyinfo
     def get_timestamp_request(self, file_name):
-        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name).split(' ')
+        cmd = api_settings.SSL_CREATE_TIMESTAMP_REQUEST.format(file_name.encode('utf-8')).split(api_settings.TST_COMMAND_DELIMITER)
         process = subprocess.Popen(
             cmd, shell=False, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -599,9 +712,10 @@ class AddTimestamp:
 
     def get_timestamp_upki(self, file_name, tmp_dir):
         cmd = api_settings.UPKI_CREATE_TIMESTAMP.format(
-            file_name,
+            file_name.encode('utf-8'),
             '/dev/stdout'
-        ).split(' ')
+        ).split(api_settings.TST_COMMAND_DELIMITER)
+
         try:
             process = subprocess.Popen(
                 cmd, shell=False, stdin=subprocess.PIPE,
@@ -785,9 +899,13 @@ class TimeStampTokenVerifyCheck:
                 elif not verify_result.timestamp_token:
                     # if timestamptoken does not exist:
                     # update verifyResult 'TST missing(Retrieving Failed)'
-                    verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
-                    ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
-                    verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
+                    if verify_result.inspection_result_status != api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND:
+                        verify_result.inspection_result_status = api_settings.TIME_STAMP_TOKEN_NO_DATA
+                        ret = api_settings.TIME_STAMP_TOKEN_NO_DATA
+                        verify_result_title = api_settings.TIME_STAMP_TOKEN_NO_DATA_MSG
+                    else:
+                        ret = verify_result.inspection_result_status
+                        verify_result_title = api_settings.TIME_STAMP_TOKEN_CHECK_FILE_NOT_FOUND_MSG
 
             if ret == 0:
 
@@ -809,10 +927,10 @@ class TimeStampTokenVerifyCheck:
                         raise err
 
                     cmd = api_settings.SSL_GET_TIMESTAMP_RESPONSE.format(
-                        file_name,
+                        file_name.encode('utf-8'),
                         timestamptoken_file_path,
                         os.path.join(api_settings.KEY_SAVE_PATH, api_settings.VERIFY_ROOT_CERTIFICATE)
-                    ).split(' ')
+                    ).split(api_settings.TST_COMMAND_DELIMITER)
                     prc = subprocess.Popen(
                         cmd, shell=False, stdin=subprocess.PIPE,
                         stderr=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -835,9 +953,9 @@ class TimeStampTokenVerifyCheck:
                     except Exception as err:
                         raise err
                     cmd = api_settings.UPKI_VERIFY_TIMESTAMP.format(
-                        file_name,
-                        file_name + '.tst'
-                    ).split(' ')
+                        file_name.encode('utf-8'),
+                        file_name.encode('utf-8') + '.tst'
+                    ).split(api_settings.TST_COMMAND_DELIMITER)
                     try:
                         process = subprocess.Popen(
                             cmd, shell=False, stdin=subprocess.PIPE,
